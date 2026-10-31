@@ -39,8 +39,8 @@ def load_calibration(path):
         raise FileNotFoundError(
             f"Calibration file not found: {path}\n"
             "Run the calibration first:\n"
-            "  python3 calibration/capture_calibration_images.py\n"
-            "  python3 calibration/calibrate_camera.py"
+            "  python calibration\\capture_calibration_images.py\n"
+            "  python calibration\\calibrate_camera.py"
         )
     data = np.load(path, allow_pickle=False)
     calibration = {key: data[key] for key in data.files}

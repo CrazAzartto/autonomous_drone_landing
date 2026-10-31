@@ -2,8 +2,8 @@
 Generate exact-size printable A4 PDFs for the ArUco marker and the calibration checkerboard,
 using the dictionary / ID / sizes in config/camera_config.yaml.
 
-Usage (from the repository folder):
-    python3 tools/generate_print_sheets.py
+Usage (from the autonomous_drone_landing folder, with the .venv active):
+    python tools\\generate_print_sheets.py
 Output:
     results/print_aruco_marker.pdf      marker with white margin, cut line and a 100 mm check ruler
     results/print_checkerboard.pdf      checkerboard with the configured inner-corner count and square size
@@ -103,7 +103,7 @@ dashed_rectangle(page, x0 - margin_mm, y0 - margin_mm, x0 + marker_mm + margin_m
 text(page, "ArUco marker  -  print at 100% (Actual size), NOT 'Fit to page'", 15, 20, 1.0)
 text(page, f"dictionary {dictionary_name}   ID {marker_id}   black square = {marker_mm:.1f} mm", 15, 30, 1.0)
 text(page, f"cut on the dashed line (white margin {margin_mm:.1f} mm) - keep the white border!", 15, 40, 0.9)
-text(page, "TOP of marker = this side ^  (mark it on the back before cutting)", 15, 55, 0.9)
+text(page, "TOP of marker = this side ^  = DRONE FRONT (mark an arrow on the back before cutting)", 15, 55, 0.9)
 text(page, "Measure the BLACK square after printing and put that value in", 15, y0 + marker_mm + margin_mm + 15, 0.9)
 text(page, "config/camera_config.yaml -> aruco.marker_length_mm", 15, y0 + marker_mm + margin_mm + 23, 0.9)
 ruler(page, 15, 270)

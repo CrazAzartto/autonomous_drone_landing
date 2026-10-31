@@ -1,169 +1,110 @@
-# 02 · Configuring the Logitech C920 on Ubuntu
+# 02 · Setting up the Logitech C920 on Windows
 
-> **[Verified]** = from a cited source or tested; **[Recommendation]** = advice;
-> **[Assumption]** = depends on your unit/kernel, **check with the commands shown**.
-> Control names and ranges below are what C920 users have reported. **Your camera's own
-> `v4l2-ctl --list-ctrls` output is the only authority.** Do not copy values blindly.
+> **Tags:** **[Verified]** = checked in a source or in tests, **[Recommendation]** = engineering advice,
+> **[Assumption]** = depends on your camera/driver, **you must check it on your PC**.
 
 ---
 
-## 0. Tools
+## 1. What we need from the camera
 
-```bash
-sudo apt update
-sudo apt install v4l-utils          # provides v4l2-ctl
-sudo apt install guvcview           # optional GUI to play with controls
-groups | grep -q video || sudo usermod -aG video $USER    # then log out and back in
-```
-
-## 1. Find the camera
-
-```bash
-lsusb | grep -i logitech                 # is it on the USB bus?
-v4l2-ctl --list-devices                  # which /dev/video* nodes belong to it
-ls -l /dev/v4l/by-id/                    # stable names (do not change between reboots/ports)
-python3 detection/camera_info.py --list  # the same, from this repository
-```
-
-One webcam normally creates **two** nodes (e.g. `/dev/video0` = video, `/dev/video1` = metadata).
-Use the one that delivers images, normally the lower number. **[Verified: common Linux UVC behaviour]**
-
-Put the device in `config/camera_config.yaml → camera.device`. The `/dev/v4l/by-id/...-video-index0` path is
-the most robust choice, because it never changes when other cameras are plugged in. **[Recommendation]**
-
-## 2. Resolution and pixel format
-
-```bash
-v4l2-ctl -d /dev/video0 --list-formats-ext
-python3 detection/camera_info.py --formats      # same
-```
-
-What C920 owners report **[Verified, NVIDIA forum listing of a C920]**:
-
-| Format | 640×480 | 1280×720 | 1920×1080 |
-|---|---|---|---|
-| **YUYV** (uncompressed) | up to 30 fps | **10 fps** | **5 fps** |
-| **MJPG** (compressed) | 30 fps | **30 fps** | **30 fps** |
-| H264 (some units only) | 30 fps | 30 fps | 30 fps |
-
-**Consequence:** at 720p or 1080p you only get 30 fps in **MJPG**. OpenCV may pick YUYV unless asked, so the
-config sets `fourcc: "MJPG"` and `common/camera.py` requests it **before** setting the size (V4L2 order matters).
-`camera_info.py` prints the requested and the actual format, and **measures** the real frame rate.
-
-### Which resolution? **[Recommendation]**
-
-| | 640×480 | **1280×720 (chosen)** | 1920×1080 |
-|---|---|---|---|
-| fps (MJPG) | 30 | 30 | 30 |
-| marker pixels at 1 m (50 mm marker, illustrative fx) | ~30 px | ~45 px | ~68 px |
-| depth noise at 1 m (relative) | 1.5× | 1× | 0.67× |
-| detection CPU time | lowest | medium | ~2.25× of 720p |
-| aspect ratio / field of view | 4:3, may use a different sensor crop | 16:9 | 16:9 |
-
-1280×720 is the balanced choice for a first stage. 1920×1080 improves depth precision by about 1.5×
-(σ_Z ∝ 1/fx; see docs/03) at the cost of CPU time and latency. You can switch later, but then you must **recalibrate**.
-
-**Keep calibration and detection identical.** All programs read `width/height/fps/fourcc` from the same YAML.
-The calibration file stores the size, and `aruco_pose_estimation.py` refuses to run on a mismatch.
-Changing the resolution means: edit the YAML → `capture_calibration_images.py --clear` → recalibrate.
-
-## 3. Camera controls: inspect first
-
-```bash
-v4l2-ctl -d /dev/video0 --list-ctrls-menus
-python3 detection/camera_info.py --controls          # same
-bash scripts/configure_c920.sh /dev/video0 show      # formats + controls + current format
-```
-
-Names reported for a C920 on a recent kernel (Linux 6.x, Raspberry Pi OS) **[Verified, crowsnest issue #96]**:
-
-| Control | Type / range (as reported) | Purpose |
+| Need | Why | Setting |
 |---|---|---|
-| `auto_exposure` | menu 0–3, default 3 | 1 = Manual Mode, 3 = Aperture Priority (auto) |
-| `exposure_time_absolute` | 3–2047, default 156 | exposure in units of **100 µs** (UVC); *inactive* while auto |
-| `exposure_dynamic_framerate` | bool | if 1 the camera may **lower the fps** in dim light |
-| `gain` | 0–255 | sensor amplification (more gain = more noise) |
-| `focus_automatic_continuous` | bool, default 1 | autofocus on/off |
-| `focus_absolute` | 0–250 | manual focus position; *inactive* while autofocus is on |
-| `zoom_absolute` | 100–500, default 100 | **digital** zoom (crop); 100 = full field of view |
-| `white_balance_automatic` / `white_balance_temperature` | bool / 2800–7500 K | colour |
-| `power_line_frequency` | menu 0–2 | anti-flicker: 1 = 50 Hz, 2 = 60 Hz |
-| `brightness`, `contrast`, `saturation`, `sharpness`, `backlight_compensation`, `pan_absolute`, `tilt_absolute` | | image tuning / digital pan-tilt |
+| the **same resolution** in calibration and flight | the calibration (`fx, fy, cx, cy`) is only valid for one resolution | `camera.width/height` in the config; every program checks it |
+| **30 fps** | the controller can only react as often as it gets a new position | `fps: 30` + `fourcc: "MJPG"` |
+| **sharp** marker at the flying height | blurred corners = noisy position | manual focus for about 50–100 cm |
+| **short exposure** | a moving drone smears in a long exposure | manual exposure (§4) |
+| **no digital zoom** | zoom crops the image and changes `fx` | `zoom: 100` (or leave it untouched at 100) |
 
-**[Assumption: kernel-dependent names]** Older kernels used `exposure_auto`,
-`exposure_absolute`, `exposure_auto_priority`, `focus_auto` and `white_balance_temperature_auto` for the same controls.
-`scripts/configure_c920.sh` checks which names your camera reports and uses those.
-In the Python config, write the names exactly as **your** `--list-ctrls` shows them; unknown names are skipped with a warning.
+## 2. Facts about the C920
 
-Ranges and steps can differ between C920 revisions. Respect the `min/max/step` your camera prints.
+- 1080p/30 fps and 720p/30 fps, **78° diagonal** field of view, autofocus. **[Verified: Logitech product page]**
+- At 1280×720 the C920 reaches 30 fps only in the compressed **MJPG** format. The uncompressed YUY2 format is limited
+  to roughly 10 fps at that size. **[Assumption: widely reported for the C920; check with `camera_info.py`, which measures the real frame rate]**
+- The zoom is **digital** only (100 = no zoom). **[Verified: Logitech specs list no optical zoom]**
 
-## 4. Exposure, gain, focus, white balance: what to set for ArUco **[Recommendation]**
+## 3. How the programs open the camera on Windows
 
-Goal: **sharp** corners (no motion blur), **constant** brightness, **constant** frame rate.
+All programs call `common/camera.py → open_camera()`, which:
 
-1. **Exposure: manual and short.** Blur length = speed × exposure. A drone marker moving at 0.5 m/s with a 33 ms
-   auto exposure smears by 1.6 cm, about 15 px at 1 m. At 10 ms that drops to about 5 px.
-   - Under 50 Hz mains lighting (India), lights flicker at 100 Hz. Use exposure **100** (10 ms) or **200** (20 ms),
-     integer multiples of 10 ms, plus `power_line_frequency=1`, to avoid moving dark bands.
-   - Then raise `gain` until the image is bright enough; add light rather than gain if you can.
-2. **`exposure_dynamic_framerate = 0`**, otherwise the C920 silently drops to 15 fps in dim light.
-3. **Focus: locked.** Autofocus "hunting" changes the image scale slightly and blurs frames.
-   1. `bash scripts/configure_c920.sh /dev/video0 autofocus`
-   2. hold the marker or board at your working distance (about the drone height above the camera) for about 3 s
-   3. `v4l2-ctl -d /dev/video0 --get-ctrl=focus_absolute` and write the number down
-   4. `bash scripts/configure_c920.sh /dev/video0 lock <focus> 100 <gain>`
-4. **White balance:** irrelevant for ArUco geometry (it uses grey levels), but locking it keeps images consistent.
-5. **Zoom:** keep `zoom_absolute = 100`.
+1. opens `camera.device` (a number: 0, 1, 2 …) with the **DirectShow** driver (`backend: "dshow"`);
+2. asks for `MJPG`, then `1280×720`, `30 fps` (the format is requested before and after the size, because some
+   DirectShow drivers only accept MJPG once the size is set);
+3. applies every non-`null` value in `camera.controls` and **reads it back**, printing `OK`, `SET?` (the driver
+   accepted it but reports another value) or `REJECTED`;
+4. checks the real size and refuses to continue if it is not the configured one.
 
-### Verify that a setting really changed
+**Why DirectShow and not Media Foundation (MSMF)?** **[Recommendation]** With DirectShow, OpenCV can open the
+camera's own **settings window** (`CAP_PROP_SETTINGS`) and set MJPG reliably. MSMF is selectable in the config
+(`backend: "msmf"`) if DirectShow ever fails on your PC.
 
-```bash
-v4l2-ctl -d /dev/video0 --get-ctrl=auto_exposure,exposure_time_absolute,focus_automatic_continuous,focus_absolute,zoom_absolute
-v4l2-ctl -d /dev/video0 --list-ctrls | grep -E "exposure|focus|zoom"   # 'inactive' flag must be gone for manual values
+### Which index is the C920?
+
+```
+python detection\camera_info.py --list
 ```
 
-Both the script and `common/camera.py` read every control back after setting it and print
-`OK` or `CHECK`. Then look at the image: a manual-exposure change must visibly change brightness.
+prints the camera names (needs the `pygrabber` package from `requirements.txt`) and tests indices 0–5.
+A laptop's built-in webcam is usually index 0 and the C920 index 1. **[Assumption]** The order can change
+when you plug the C920 into another USB port, so run `--list` again if the wrong camera opens.
 
-### Make the settings permanent for this project
+## 4. Focus, exposure, gain, zoom: the easy way (settings window)
 
-Controls reset when the camera is unplugged or the PC reboots. Copy the values that worked into
-`config/camera_config.yaml → camera.v4l2_controls`, in the order **auto-switch first, manual value second**.
-Every program then applies them when it opens the camera, so calibration and detection always match:
+Units of these values differ between drivers, so the reliable way on Windows is to adjust them visually and let the
+program read them back.
 
-```yaml
-  v4l2_controls:
-    focus_automatic_continuous: 0
-    focus_absolute: 30            # your measured value
-    zoom_absolute: 100
-    auto_exposure: 1
-    exposure_time_absolute: 100   # 10 ms
-    exposure_dynamic_framerate: 0
-    gain: 64                      # your value
-    power_line_frequency: 1       # 50 Hz
-```
+1. `python detection\camera_info.py --settings`
+2. The C920's settings window opens (tabs "Video Proc Amp" and "Camera Control"). Hold the marker or the
+   checkerboard about **70 cm** from the lens (your typical flying height).
+3. **Focus:** leave *Auto* ticked for 3 seconds so it focuses, then **untick Auto**. The focus stays where it is.
+4. **Exposure:** untick *Auto*. Lower the exposure until a waved hand is no longer smeared,
+   then raise the *Gain* until the image is bright enough. Short exposure + some noise is better than motion blur.
+   *Illustrative:* DirectShow exposure −6 ≈ 15.6 ms, −7 ≈ 7.8 ms, −8 ≈ 3.9 ms (the value is log₂ of seconds).
+5. **Zoom:** 100. **Power line frequency** (Video Proc Amp tab): 50 Hz in India; this stops flicker under tube lights.
+   **[Recommendation]**
+6. Close the window and press **`p`** in the video window. The program prints lines such as
 
-## 5. Zoom and field of view
+   ```
+   controls:
+     autofocus: 0
+     focus: 30
+     exposure: -7
+     gain: 120
+     zoom: 100
+   ```
 
-- **[Verified]** Logitech lists the C920 as 1080p/30 fps with a **78° diagonal** field of view and autofocus.
-  The product page lists **no optical zoom**. The lens has a fixed focal length.
-- **[Verified, user-reported control list]** Linux exposes `zoom_absolute` (100–500). This is a **digital** zoom:
-  the camera crops the centre of the sensor and scales it up.
-- Digital zoom = crop = a different `fx, fy, cx, cy`. A calibration made at zoom 100 is **invalid** at any other zoom.
-- Some other apps (video-call software) can change zoom or other controls. Always start experiments with
-  `bash scripts/configure_c920.sh /dev/video0 lock ...` or the `v4l2_controls` in the config, and check with
-  `--get-ctrl zoom_absolute`.
+7. Copy them into `config\camera_config.yaml → camera.controls`. From now on **every** program
+   (calibration, pose, controller) sets the same values when it opens the camera.
+8. Run `python detection\camera_info.py` again. The control lines should say `OK`, and the measured frame rate should be about 30 fps.
 
-## 6. Fixed-configuration checklist (every session)
+`auto_exposure` is left `null` on purpose: on DirectShow, writing a manual `exposure` normally switches auto-exposure
+off by itself. **[Assumption: driver dependent]** If the read-back shows the exposure still changing, set it in the
+settings window instead, and check with `p`.
 
-- [ ] same `/dev/v4l/by-id/...` device, same USB port preferably (a USB 2.0 port is enough for MJPG)
-- [ ] `camera_info.py` shows **1280×720 MJPG** and a measured fps of about 30
-- [ ] zoom 100, focus locked at the calibrated value, manual exposure
-- [ ] calibration file created with these settings (date in `results/calibration_report.txt`)
+## 5. Which settings matter for the calibration?
 
-## Sources
-- C920 formats (YUYV/MJPG/H264 frame rates): NVIDIA developer forum,
-  <https://forums.developer.nvidia.com/t/unable-to-get-logitech-c920-to-work-with-gstreamer-solved/65203/5>
-- C920 control list on Linux 6.1 (names, ranges): <https://github.com/mainsail-crew/crowsnest/issues/96>
-- Older control names (`exposure_auto`, `focus_auto`): <https://www.christitus.com/logitech-c920-linux-driver/>
-- Logitech C920 specifications: <https://logitech.com/en-za/products/webcams/c920-pro-hd-webcam.html>
+| Setting | Changes the geometry (recalibrate if changed)? |
+|---|---|
+| resolution | **yes** |
+| zoom (≠ 100) | **yes** |
+| focus | **yes** for best accuracy (small change of the focal length) |
+| exposure, gain, brightness, white balance, power-line frequency | no |
+
+So: **fix the focus and zoom first, then calibrate.** Exposure can be re-tuned later without recalibrating.
+
+## 6. Camera on the floor looking up: lighting
+
+- Ceiling lamps directly above the camera make the marker a dark shape against a bright background. Move the setup
+  so no lamp is in the image, or reduce the exposure until the marker's white cells are clearly white.
+- Matte paper only (glossy paper reflects the lamps).
+- The white margin around the black square must stay visible and white. The detector needs it.
+
+## 7. Problems
+
+| Symptom | Fix |
+|---|---|
+| `Could not open camera N` | wrong index (`--list`); close the Camera app, Teams, Zoom or the browser; Windows Settings → Privacy & security → Camera → allow desktop apps |
+| the built-in webcam opens instead of the C920 | change `camera.device` (usually 1) |
+| ~10 fps at 1280×720 | `fourcc` not MJPG, or exposure too long in a dark room (auto-exposure lowers the frame rate). Use manual exposure |
+| control shows `REJECTED` | that camera has no such control; set it to `null` |
+| settings window does not open | only with `backend: "dshow"` |
+| image flickers / bands | power-line frequency 50 Hz in the settings window |

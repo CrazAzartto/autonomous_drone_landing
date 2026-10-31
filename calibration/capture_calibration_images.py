@@ -2,9 +2,9 @@
 PROGRAM 2 - capture_calibration_images.py
 Capture checkerboard photos for camera calibration.
 
-Usage (from the repository folder):
-    python3 calibration/capture_calibration_images.py
-    python3 calibration/capture_calibration_images.py --clear     # delete old images first
+Usage (from the autonomous_drone_landing folder, with the .venv active):
+    python calibration\\capture_calibration_images.py
+    python calibration\\capture_calibration_images.py --clear     # delete old images first
 
 Keys:
     SPACE   save the current frame (only if the WHOLE board is detected and the image is sharp)
@@ -192,4 +192,4 @@ print(f"\n{len(saved_paths)} images in {IMAGES_DIR}")
 if len(saved_paths) < MIN_IMAGES:
     print(f"Capture at least {MIN_IMAGES} (20-30 recommended) before calibrating.")
 else:
-    print("Next step:  python3 calibration/calibrate_camera.py")
+    print("Next step:  python calibration\\calibrate_camera.py")

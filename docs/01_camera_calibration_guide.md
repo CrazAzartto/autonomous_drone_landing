@@ -1,4 +1,4 @@
-# 01 · Camera calibration (Logitech C920, Ubuntu)
+# 01 · Camera calibration (Logitech C920, Windows)
 
 > **Tags used in these docs:** **[Verified]** = checked in a source or in tests,
 > **[Recommendation]** = engineering advice, **[Assumption]** = depends on your setup, **you must measure it**.
@@ -80,7 +80,7 @@ non-linear least squares (Zhang's method).
 - Use **different** counts in the two directions (even × odd, e.g. 6 × 9) so the detected orientation is unambiguous.
 - Square size: big enough to be sharp at your working distance. 25 mm on A4 works for 0.4–1.2 m.
   **[Recommendation]**
-- Generate the board for your config with `python3 tools/generate_print_sheets.py`. The default is 6 × 9 inner corners
+- Generate the board for your config with `python tools\generate_print_sheets.py`. The default is 6 × 9 inner corners
   with 25 mm squares, the same board as the sheet already printed. **[Verified]**: the generated PDF measures 24.97 mm per square at 150 dpi rendering.
 
 ## 6. Measuring the square size accurately
@@ -115,7 +115,7 @@ Keep going until the whole image has been covered at least once.
 - **Changing settings between calibration and use**: resolution, digital zoom or focus (see §8).
 - **Only frontal images in the centre**: gives a poor `K` even if the RMS error looks small.
 - **Board partially out of frame**: not saved (the whole pattern is required).
-- **Autofocus hunting during capture**: lock focus first (docs/02).
+- **Autofocus hunting during capture**: switch autofocus off first (docs/02 §4).
 
 ## 8. What invalidates a calibration
 
@@ -180,25 +180,25 @@ These files are personal to your camera and are **not** committed to Git (`.giti
 
 ## 11. Physical procedure, step by step
 
-```bash
-cd ~/autonomous_drone_landing
-source .venv/bin/activate
+The full click-by-click version is in **docs/04_windows_step_by_step.md**. Short form (PowerShell, in the
+`autonomous_drone_landing` folder, `.venv` active):
 
+```
 # 0. print + measure (once)
-python3 tools/generate_print_sheets.py          # -> results/print_checkerboard.pdf
+python tools\generate_print_sheets.py          # -> results\print_checkerboard.pdf
 #    print at 100 %, glue flat, measure 6 squares / 6 -> edit checkerboard.square_size_mm
 
-# 1. lock the camera settings (docs/02): resolution in config, focus/exposure locked, zoom 100
+# 1. fix the camera settings (docs/02): resolution in config, focus locked, zoom 100
 
 # 2. capture 20-30 images (SPACE = save, u = undo, q = quit)
-python3 calibration/capture_calibration_images.py --clear
+python calibration\capture_calibration_images.py --clear
 
 # 3. calibrate
-python3 calibration/calibrate_camera.py
-#    check: RMS < 0.5 px, fy/fx ~ 1, (cx, cy) near the centre, look at results/undistort_check.png
+python calibration\calibrate_camera.py
+#    check: RMS < 0.5 px, fy/fx ~ 1, (cx, cy) near the centre, look at results\undistort_check.png
 
 # 4. verify with a tape measure
-python3 detection/aruco_pose_estimation.py
+python detection\aruco_pose_estimation.py
 #    hold the marker parallel to the camera at 50 cm and 100 cm (tape from the lens front);
 #    Z should read within about 2-3 %.
 ```

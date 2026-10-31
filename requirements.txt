@@ -1,9 +1,17 @@
-# Written for Python 3.10 (Ubuntu 22.04) and 3.12 (Ubuntu 24.04).
-# opencv-contrib-python provides cv2.aruco.ArucoDetector (new API since 4.7).
+# Windows 10/11, Python 3.12 (tested with 3.12.10 in codebase\.venv).
+# Install:   python -m pip install -r requirements.txt
+#
+# opencv-contrib-python provides cv2.aruco.ArucoDetector (new ArUco API).
 # 4.10 is the first release built for NumPy 2 - older OpenCV + NumPy 2 crashes on import.
 # Do NOT install opencv-python at the same time (it conflicts with the contrib build).
 opencv-contrib-python>=4.10,<5
 numpy
 PyYAML>=5.4
-# Only used by tools/generate_print_sheets.py to write exact-size PDFs:
+# tools/generate_print_sheets.py writes exact-size PDFs with Pillow:
 Pillow>=9.0
+# control/plotting.py:
+matplotlib
+# Lists the cameras by NAME on Windows (detection/camera_info.py --list). Optional.
+pygrabber; sys_platform == "win32"
+# The Pluto drone library used by control/run_controller.py --fly is the same one your
+# pluto_course scripts use (plutocontrol); install it as you did there.

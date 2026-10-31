@@ -1,26 +1,33 @@
 # ============================================================
-# CAMERA + MARKER CONFIGURATION  (single source of truth)
+# CAMERA + MARKER + TRACKING CONFIGURATION  (single source of truth)
 # ============================================================
-# Every program in this repository reads THIS file, so the
-# calibration and the detection always use identical settings.
+# Every program in this repository reads THIS file, so calibration,
+# detection, tracking and the controller always use identical settings.
 #
 # Values marked  MEASURE  depend on your physical setup.
 # Edit them after measuring - do not trust the defaults blindly.
+#
+# Setup assumed by this project:
+#   Logitech C920 lying on the FLOOR, lens looking UP,
+#   ArUco marker glued UNDER the Pluto drone (printed TOP edge = drone FRONT).
 # ============================================================
 
 
 # ------------------------------------------------------------
-# CAMERA
+# CAMERA (Windows)
 # ------------------------------------------------------------
 camera:
 
-  # Which webcam to open. Any of these work on Ubuntu:
-  #   0                      -> /dev/video0
-  #   "/dev/video2"          -> explicit device node
-  #   "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_XXXXXXXX-video-index0"
-  #                          -> stable name that never changes between reboots (recommended)
-  # Find yours with:  python3 detection/camera_info.py --list
-  device: 0
+  # Camera index as Windows numbers it (0, 1, 2 ...).
+  # Laptops usually have the built-in webcam as 0 and the C920 as 1.
+  # Find the right index with:   python detection\camera_info.py --list
+  # (A video file path also works, e.g. "results/test_video.mp4" - useful for replaying tests.)
+  device: 1
+
+  # Windows camera driver used by OpenCV:
+  #   "dshow" = DirectShow (recommended for the C920: supports MJPG and the camera settings dialog)
+  #   "msmf"  = Media Foundation,  "any" = let OpenCV choose
+  backend: "dshow"
 
   # Resolution and frame rate. MUST stay identical for calibration and detection.
   # 1280x720 @ 30 fps is the recommended compromise for the C920 (see docs/02).
@@ -28,32 +35,26 @@ camera:
   height: 720
   fps: 30
 
-  # Pixel format. The C920 only delivers 30 fps at 720p/1080p in MJPG.
-  # (Uncompressed YUYV is limited to ~10 fps at 1280x720 and ~5 fps at 1920x1080.)
+  # Pixel format. The C920 only delivers 30 fps at 720p/1080p in MJPG
+  # (uncompressed YUY2 is limited to ~10 fps at 1280x720).
   fourcc: "MJPG"
 
   # Keep only the newest frame in the driver queue (lower latency).
   buffer_size: 1
 
-  # Optional V4L2 controls applied with `v4l2-ctl` every time a program opens the
-  # camera, so calibration and detection always run with the same settings.
-  # - Controls your camera does not report are skipped with a warning.
-  # - Order matters: set the "auto" switch BEFORE the manual value.
-  # - Leave empty ({}) until you have read docs/02_c920_configuration.md and
-  #   measured your own values (focus value, exposure value).
-  # Example for a C920 on a recent kernel (VERIFY names with: v4l2-ctl -d <dev> --list-ctrls):
-  #   v4l2_controls:
-  #     focus_automatic_continuous: 0     # autofocus OFF
-  #     focus_absolute: 30                # MEASURE (see docs/02)
-  #     zoom_absolute: 100                # 100 = no digital zoom (full field of view)
-  #     auto_exposure: 1                  # 1 = manual exposure
-  #     exposure_time_absolute: 100       # MEASURE, units of 100 us -> 100 = 10 ms (flicker-free at 50 Hz mains)
-  #     exposure_dynamic_framerate: 0     # do not let the camera drop the frame rate
-  #     gain: 64                          # MEASURE
-  #     white_balance_automatic: 0
-  #     white_balance_temperature: 4500
-  #     power_line_frequency: 1           # 1 = 50 Hz mains (India), 2 = 60 Hz
-  v4l2_controls: {}
+  # Camera settings applied (and read back) every time a program opens the camera, so
+  # calibration and flying always use the same image settings.  null = leave as it is.
+  # The easiest way to find good values on Windows:
+  #     python detection\camera_info.py --settings
+  # opens the C920's own settings window; adjust there, and the program prints the values
+  # to copy here. Units are those of the Windows (DirectShow) driver - see docs/02.
+  controls:
+    autofocus: null      # 0 = OFF (recommended after you found a good focus), 1 = ON
+    focus: null          # MEASURE: manual focus value (C920: about 0..250, step 5)
+    auto_exposure: null  # DirectShow: value depends on driver - use the settings window (docs/02)
+    exposure: null       # DirectShow units: log2(seconds). -6 = 15.6 ms, -7 = 7.8 ms, -8 = 3.9 ms
+    gain: null           # 0..255 on the C920; raise only if the image is too dark at short exposure
+    zoom: null           # C920 digital zoom: 100 = NO zoom (full field of view). Keep 100.
 
 
 # ------------------------------------------------------------
@@ -63,7 +64,7 @@ checkerboard:
 
   # Number of INNER corners (where four squares meet), NOT the number of squares.
   # A board with 7 x 10 squares has 6 x 9 inner corners.
-  # Defaults match tools/generate_print_sheets.py and the sheet already printed.
+  # Defaults match tools\generate_print_sheets.py and the sheet already printed.
   inner_corners_cols: 6
   inner_corners_rows: 9
 
@@ -80,7 +81,7 @@ aruco:
   # Any OpenCV predefined dictionary name, e.g. DICT_4X4_50, DICT_5X5_100, DICT_6X6_250.
   dictionary: "DICT_4X4_50"
 
-  # The marker whose pose is estimated (others are still drawn).
+  # The marker under the drone.
   marker_id: 0
 
   # MEASURE: side length of the BLACK square of the printed marker, in millimetres
@@ -106,11 +107,11 @@ calibration:
 
 
 # ------------------------------------------------------------
-# DETECTION / POSE ESTIMATION
+# DETECTION / POSE ESTIMATION (live viewer)
 # ------------------------------------------------------------
 detection:
 
-  # How often X, Y, Z are printed to the terminal (the window updates every frame).
+  # How often values are printed to the terminal (the window updates every frame).
   print_rate_hz: 5
 
   # Length of the drawn coordinate axes, as a fraction of the marker size.
@@ -119,5 +120,47 @@ detection:
   # After this many consecutive failed frame reads, try to reopen the camera.
   max_failed_reads: 30
 
+  # Poses are rejected when the reprojection error is above this (pixels): bad detections
+  # (blur, partial occlusion) never reach the filter or the controller.
+  max_reproj_error_px: 2.0
+
   # Optional CSV log of every pose (enable with --log on the command line).
   log_file: "results/pose_log.csv"
+
+
+# ------------------------------------------------------------
+# TRACKING (Kalman filter: smooth position + velocity for the PID "D" term)
+# ------------------------------------------------------------
+tracking:
+
+  # Constant-velocity Kalman filter.
+  # process_accel_std: how hard the drone can accelerate (m/s^2). Larger = follows faster, noisier.
+  # measurement_std_xy / _z: noise of one camera measurement (m). Z (height) is noisier than X/Y.
+  process_accel_std: 2.0
+  measurement_std_xy: 0.004
+  measurement_std_z: 0.010
+
+  # If the marker is not seen for longer than this, the state is marked INVALID
+  # (the controller must then stop correcting - e.g. hold neutral / land).
+  max_lost_time_s: 0.3
+
+
+# ------------------------------------------------------------
+# TARGET (hover / landing point) - written by tools\set_target.py
+# ------------------------------------------------------------
+target:
+
+  # File created by tools\set_target.py: it stores where "forward" is and the target point.
+  file: "results/target.json"
+
+  # Height of the marker above the camera lens at which the drone should hover (m).
+  hover_height_m: 0.80
+
+
+# ------------------------------------------------------------
+# CONTROL LOOP (control\run_controller.py) - PID gains/RC mapping are added there
+# ------------------------------------------------------------
+control:
+
+  loop_rate_hz: 30
+  log_file: "results/control_log.csv"

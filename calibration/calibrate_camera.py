@@ -2,9 +2,9 @@
 PROGRAM 3 - calibrate_camera.py
 Compute the camera matrix K and the distortion coefficients from the checkerboard images.
 
-Usage (from the repository folder):
-    python3 calibration/calibrate_camera.py
-    python3 calibration/calibrate_camera.py --show      # also show each detection + an undistortion preview
+Usage (from the autonomous_drone_landing folder, with the .venv active):
+    python calibration\\calibrate_camera.py
+    python calibration\\calibrate_camera.py --show      # also show each detection + an undistortion preview
 
 Output:
     results/camera_calibration.npz     (path set in config/camera_config.yaml)
@@ -107,7 +107,7 @@ if args.show:
 print(f"Board detected in {len(used_files)} images.")
 if len(used_files) < MIN_IMAGES:
     print(f"ERROR: need at least {MIN_IMAGES} usable images. Capture more with "
-          f"calibration/capture_calibration_images.py")
+          f"calibration\\capture_calibration_images.py")
     sys.exit(1)
 
 
@@ -218,7 +218,7 @@ cv2.imwrite(preview_path, side_by_side)
 print(f"\nSaved calibration : {OUTPUT_FILE}")
 print(f"Saved report      : {report_path}")
 print(f"Saved preview     : {preview_path}  (left = original, right = undistorted)")
-print("Next step:  python3 detection/aruco_pose_estimation.py")
+print("Next step:  python detection\\aruco_pose_estimation.py")
 
 if args.show:
     cv2.imshow("left: original | right: undistorted  (any key = close)", cv2.resize(side_by_side, None, fx=0.5, fy=0.5))

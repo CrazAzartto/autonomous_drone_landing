@@ -26,9 +26,9 @@ If you change them, **regenerate and reprint** the marker.
 
 ## 2. Generating, printing and measuring the marker
 
-```bash
-python3 tools/generate_print_sheets.py
-# -> results/print_aruco_marker.pdf  (dictionary, ID and size from the config)
+```
+python tools\generate_print_sheets.py
+# -> results\print_aruco_marker.pdf  (dictionary, ID and size from the config)
 ```
 
 1. Print at **100 % / Actual size**. Check the 100 mm ruler on the sheet with a real ruler.
@@ -82,8 +82,10 @@ P_camera = R · P_marker + t          with  R = Rodrigues(rvec)
 - A marker lying flat and **facing** the camera has its +z pointing back at the camera, opposite to the camera's +Z.
   So `R` is about a **180° rotation about X**, not the identity. This is expected. (Our own test generator first
   got this wrong and produced a mirror image, which ArUco correctly refused to decode.)
-- The program also shows a **yaw** angle: the rotation of the marker's x axis about the camera's optical axis,
-  `atan2(R[1,0], R[0,0])`. Later this becomes the α feature (heading).
+- The program also shows a **heading**: the direction of the marker's **+y axis** (= the drone's nose, because the
+  printed TOP edge points to the drone's front) projected on the camera's x–y plane,
+  `heading = atan2(R[1,1], R[0,1])`. With the camera looking up, this angle is counter-clockwise **seen from above**,
+  so a larger heading = the drone turned LEFT. Using the projection keeps it correct when the drone is tilted.
 
 ## 5. How the pose is computed
 
@@ -98,7 +100,8 @@ P_camera = R · P_marker + t          with  R = Rodrigues(rvec)
    For a square planar target, `cv2.SOLVEPNP_IPPE_SQUARE` (Infinitesimal Plane-based Pose Estimation) gives an
    analytic solution from the plane homography, then refines it. It is the method OpenCV recommends for a single marker.
 3. **Quality check:** the 4 corners are re-projected with the found pose. The RMS pixel difference is shown as
-   `reproj`. Above about 1 px, the program warns that the pose is unreliable.
+   `reproj`. Above `detection.max_reproj_error_px` (2 px) the pose is **rejected**: it never reaches the filter
+   or the controller, and the screen shows the reason.
 
 **API note [Verified with opencv-contrib-python 4.10.0 and 4.14.0]:** `cv2.aruco.ArucoDetector`,
 `cv2.aruco.generateImageMarker`, `cv2.solvePnP(..., SOLVEPNP_IPPE_SQUARE)` and `cv2.drawFrameAxes` all exist and
@@ -126,10 +129,10 @@ v = 900 · (−0.040) / 0.750 + 360 = 312 px   (above the 360 centre)
 marker width in the image ≈ 900 · 0.050 / 0.750 = 60 px
 ```
 
-**For your setup (camera on the floor looking UP at a marker under the drone)** **[Assumption about your mounting]:**
-Z is the height of the marker above the lens. Which room direction is +X or +Y depends on how the
-webcam is rotated on the floor. Mark the room directions once: move the marker by hand towards one wall and watch
-which of X or Y changes, and with which sign. Write it down; the controller will need it.
+**For your setup (camera on the floor looking UP at a marker under the drone):**
+Z is the height of the marker above the lens. Which room direction is camera +X or +Y depends on how the
+webcam happens to be rotated on the floor. **You do not need to work this out:** `tools\set_target.py` (§8)
+records the drone's forward direction once, and all errors are then given in the drone's own frame.
 
 ## 7. Limitations of monocular marker pose
 
@@ -145,7 +148,62 @@ which of X or Y changes, and with which sign. Write it down; the controller will
 | **Partial visibility** | if any corner leaves the frame, there is no detection | keep the working area inside the field of view |
 | **Lighting** | backlight from ceiling lamps makes a dark marker on a bright background; glare on glossy paper | matte print, fixed exposure, avoid lamps directly above an upward camera |
 
-The poses are **raw**, one frame at a time. Filtering (for example the Kalman filter of Paper 2) is a later stage.
+## 8. World frame, target and drone errors (`vision/target.py`)
+
+The camera frame is awkward for control: its axes depend on how the webcam lies on the floor, and pitch/roll act in
+the **drone's** frame, which rotates with yaw. So the code defines:
+
+1. **Target / world frame** - recorded once with `python tools\set_target.py`: put the drone where it should hover,
+   nose pointing in the direction you call "forward", press `t`. Saved in `results\target.json`:
+   - origin = that marker position (x, y); **X_w = forward** (the drone's heading at that moment), **Y_w = left**,
+     **Z_w = up** (= height above the lens).
+2. **World position** of the drone: `p_w = Rz(−heading_ref) · (p_cam − p_target)`, and **yaw** `ψ = heading − heading_ref`.
+3. **Errors in the drone's own frame** (what the PID needs; positive = the drone must go/turn that way):
+
+   ```
+   e_forward =  cos ψ · (−x_w) + sin ψ · (−y_w)      -> pitch
+   e_left    = −sin ψ · (−x_w) + cos ψ · (−y_w)      -> roll
+   e_up      = hover_height − z_w                    -> throttle
+   e_yaw     = −ψ   (wrapped to ±180°)               -> yaw   (positive = turn LEFT)
+   ```
+
+**[Verified in synthetic tests]** (`tracker_test.py`): drone 10 cm *behind* the target → `e_forward = +10.0 cm`;
+10 cm to the *right* → `e_left = +10.2 cm`; turned 20° left → `e_yaw = −20.4°`; turned 90° left and 10 cm behind
+the target in the world → `e_forward ≈ 0`, `e_left = −10.0 cm` (the target is now on its right).
+
+## 9. Kalman filter: smooth position and velocity (`vision/kalman.py`)
+
+The PID's D-term needs velocity. Differentiating a noisy position frame-to-frame amplifies the noise, so a
+**constant-velocity Kalman filter** (state = position and velocity in x, y, z) is run on every accepted pose,
+in the world frame. Settings in `tracking:` of the config:
+
+| Key | Meaning |
+|---|---|
+| `process_accel_std` (m/s²) | how fast the velocity may change; larger = reacts faster, noisier |
+| `measurement_std_xy`, `measurement_std_z` (m) | noise of one camera measurement (Z is noisier, §7) |
+| `max_lost_time_s` | if the marker is not seen for longer, the state is **invalid** and the controller must stop correcting |
+
+When a frame has no marker, the filter **predicts** (keeps moving with the last velocity) until `max_lost_time_s`.
+**[Verified in synthetic tests]** a marker moving at 0.20 m/s backwards gave a filtered `v_forward = −0.203 m/s`
+(standard deviation 0.007 m/s) and `v_up = +0.109 m/s` for a true 0.10 m/s.
+For a fixed target, the error rate the D-term needs is simply `de/dt = −v`.
+
+## 10. Image-moment features of Papers 1/2 (`vision/features.py`)
+
+For the IBVS formulation the same detection also gives the normalised image-moment features, computed from the
+undistorted corners (`x_g, y_g` = centroid in normalised coordinates, `a` = area):
+
+```
+a* = 2·L² / Z*²   (desired area at the desired depth Z* = hover_height)
+a_n = Z* · sqrt(a* / a),     x_n = a_n · x_g,     y_n = a_n · y_g,     α = angle of the edge corner 0 -> 1
+```
+
+Here `a = μ20 + μ02` (centred second-order moments of the 4 corners), which equals `2L²/Z²` for a square seen
+face-on, hence the factor 2 in `a*`. For a marker parallel to the image plane, **`a_n = Z`, `x_n = X`, `y_n = Y`**
+(metres, camera frame). These features are therefore the metric position, which is why the IIT Bombay position PID
+and the IBVS law of Papers 1/2 lead to the same controller structure (see the report). They are logged
+(`x_n, y_n, a_n, alpha_deg` in `pose_log.csv`) and available as `state.features`. The controller template uses the
+metric errors of §8, which are also valid when the drone is tilted.
 
 ## Sources
 - OpenCV ArUco tutorial: <https://docs.opencv.org/4.x/d5/dae/tutorial_aruco_detection.html>

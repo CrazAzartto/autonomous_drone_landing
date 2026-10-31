@@ -1,40 +1,36 @@
 """
 PROGRAM 4 - aruco_pose_estimation.py
-Live ArUco detection + 3-D pose of the marker in the CAMERA frame.
+Live ArUco detection + 3-D pose + (after tools\\set_target.py) world position and drone errors.
 
-Usage (from the repository folder):
-    python3 detection/aruco_pose_estimation.py                 # live camera from the config
-    python3 detection/aruco_pose_estimation.py --log           # also write results/pose_log.csv
-    python3 detection/aruco_pose_estimation.py --all-ids       # estimate pose of every visible marker
-    python3 detection/aruco_pose_estimation.py --image results/snapshot_123.png   # test on a still image
+Usage (from the autonomous_drone_landing folder, with the .venv active):
+    python detection\\aruco_pose_estimation.py                    # live camera from the config
+    python detection\\aruco_pose_estimation.py --log              # also write results\\pose_log.csv
+    python detection\\aruco_pose_estimation.py --video clip.mp4   # replay a recorded video
+    python detection\\aruco_pose_estimation.py --image photo.png  # one still image
 
-Keys:
-    q / ESC  quit
-    s        save a snapshot (raw frame) to results/
-    p        pause / resume
+Keys:  q / ESC quit,   s snapshot,   r start/stop recording the RAW camera video (results\\recording_*.avi,
+       replay it later with --video to test changes without flying)
 
-Output (camera frame, OpenCV convention, metres -> shown in cm):
-    X > 0 : marker is to the RIGHT of the optical axis in the image
-    Y > 0 : marker is BELOW the optical axis in the image (image y points down)
-    Z > 0 : distance ALONG the optical axis, in front of the lens
+Camera frame (OpenCV convention), shown as CAMERA X / Y / Z:
+    X > 0 : marker to the RIGHT of the image centre     Y > 0 : marker BELOW the image centre
+    Z     : distance along the optical axis = height of the marker above the lens (camera on the floor)
+World frame (after set_target), shown as WORLD x / y / z:  x = forward, y = left, z = up, origin = target.
+ERROR line: how far the drone must go forward / left / up and turn left (drone's own frame).
 """
 
 import argparse
 import csv
+import math
 import os
 import sys
 import time
 
 import cv2
-import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from common.config import load_config, repo_path                         # noqa: E402
-from common.camera import open_camera                                    # noqa: E402
-from common.calibration_io import load_calibration                       # noqa: E402
-from common.aruco_utils import create_detector, detect_markers, estimate_marker_pose  # noqa: E402
-from common.overlay import draw_text                                     # noqa: E402
+from common.config import load_config, repo_path                 # noqa: E402
+from vision.marker_tracker import MarkerProcessor, MarkerTracker  # noqa: E402
 
 
 # ============================================================
@@ -44,112 +40,28 @@ from common.overlay import draw_text                                     # noqa:
 parser = argparse.ArgumentParser(description="Live ArUco marker pose estimation.")
 parser.add_argument("--config", default=None, help="path to camera_config.yaml")
 parser.add_argument("--image", default=None, help="process one image file instead of the camera")
-parser.add_argument("--log", action="store_true", help="write every pose to the CSV log file")
-parser.add_argument("--all-ids", action="store_true", help="estimate the pose of every detected marker")
+parser.add_argument("--video", default=None, help="process a video file instead of the camera")
+parser.add_argument("--log", action="store_true", help="write every frame's result to the CSV log")
 args = parser.parse_args()
 
 config = load_config(args.config)
-camera_config = config["camera"]
-aruco_config = config["aruco"]
-detection_config = config["detection"]
-
-TARGET_ID = int(aruco_config["marker_id"])
-MARKER_LENGTH_M = float(aruco_config["marker_length_mm"]) / 1000.0
-PRINT_INTERVAL = 1.0 / float(detection_config["print_rate_hz"])
-AXIS_LENGTH_M = MARKER_LENGTH_M * float(detection_config["axis_length_ratio"])
-MAX_FAILED_READS = int(detection_config["max_failed_reads"])
-LOG_FILE = repo_path(detection_config["log_file"])
-
-GREEN, RED, YELLOW, WHITE, CYAN = (0, 255, 0), (0, 0, 255), (0, 255, 255), (255, 255, 255), (255, 255, 0)
+PRINT_INTERVAL = 1.0 / float(config["detection"]["print_rate_hz"])
+LOG_FILE = repo_path(config["detection"]["log_file"])
 
 
-# ============================================================
-# LOAD CALIBRATION
-# ============================================================
-
-try:
-    calibration = load_calibration(repo_path(config["calibration"]["output_file"]))
-except FileNotFoundError as exc:
-    print(f"ERROR: {exc}")
-    sys.exit(1)
-
-CAMERA_MATRIX = calibration["camera_matrix"]
-DIST_COEFFS = calibration["dist_coeffs"]
-CALIB_SIZE = (calibration["image_width"], calibration["image_height"])
-
-print(f"Calibration loaded: {CALIB_SIZE[0]}x{CALIB_SIZE[1]}, RMS {calibration['rms_error_px']:.3f} px, "
-      f"fx={CAMERA_MATRIX[0, 0]:.1f} fy={CAMERA_MATRIX[1, 1]:.1f}")
-print(f"Marker: {aruco_config['dictionary']}, ID {TARGET_ID}, side {MARKER_LENGTH_M * 1000:.1f} mm")
-
-if CALIB_SIZE != (int(camera_config["width"]), int(camera_config["height"])):
-    print(f"ERROR: calibration was made at {CALIB_SIZE[0]}x{CALIB_SIZE[1]} but the config asks for "
-          f"{camera_config['width']}x{camera_config['height']}. Recalibrate or fix the config.")
-    sys.exit(1)
-
-detector = create_detector(aruco_config["dictionary"])
-
-
-# ============================================================
-# PROCESS ONE FRAME
-# ============================================================
-
-def process_frame(frame):
-    """Detect markers, estimate poses, draw everything. Returns (annotated_frame, list_of_results)."""
-    view = frame.copy()
-    corners_list, ids = detect_markers(detector, frame)
-    results = []
-
-    if len(ids) > 0:
-        cv2.aruco.drawDetectedMarkers(view, [c.reshape(1, 4, 2) for c in corners_list], ids.reshape(-1, 1))
-
-    for corners, marker_id in zip(corners_list, ids):
-        # Number the four corners (0 = top-left of the printed marker, then clockwise).
-        for index, (u, v) in enumerate(corners):
-            cv2.circle(view, (int(round(u)), int(round(v))), 4, CYAN, -1)
-            draw_text(view, str(index), (int(u) + 6, int(v) - 6), CYAN, 0.5, 1)
-
-        if marker_id != TARGET_ID and not args.all_ids:
-            continue
-
-        pose = estimate_marker_pose(corners, MARKER_LENGTH_M, CAMERA_MATRIX, DIST_COEFFS)
-        if pose is None:
-            continue
-        cv2.drawFrameAxes(view, CAMERA_MATRIX, DIST_COEFFS, pose["rvec"], pose["tvec"], AXIS_LENGTH_M, 2)
-        pose["id"] = int(marker_id)
-        pose["center_px"] = corners.mean(axis=0)
-        pose["side_px"] = float(np.mean([np.linalg.norm(corners[i] - corners[(i + 1) % 4]) for i in range(4)]))
-        results.append(pose)
-
-    # ---------------- text overlay ----------------
-    target = next((r for r in results if r["id"] == TARGET_ID), None)
-    if target is not None:
-        x, y, z = target["tvec"] * 100.0
-        distance = float(np.linalg.norm(target["tvec"])) * 100.0
-        lines = [
-            (f"ID {TARGET_ID}   X = {x:+7.1f} cm   Y = {y:+7.1f} cm   Z = {z:7.1f} cm", GREEN),
-            (f"distance = {distance:.1f} cm   yaw = {target['yaw_deg']:+.1f} deg   "
-             f"marker = {target['side_px']:.0f} px   reproj = {target['reproj_error_px']:.2f} px", WHITE),
-        ]
-        if target["reproj_error_px"] > 1.0:
-            lines.append(("WARNING: high reprojection error - pose unreliable (blur/size/calibration?)", YELLOW))
-    elif len(ids) > 0:
-        lines = [(f"Marker {TARGET_ID} NOT detected (visible IDs: {ids.tolist()})", YELLOW)]
-    else:
-        lines = [("NO MARKER DETECTED", RED)]
-
-    for row, (text, colour) in enumerate(lines):
-        draw_text(view, text, (10, 30 + 28 * row), colour)
-
-    # Image centre cross = where the optical axis (X = 0, Y = 0) approximately is.
-    cx, cy = int(CAMERA_MATRIX[0, 2]), int(CAMERA_MATRIX[1, 2])
-    cv2.drawMarker(view, (cx, cy), WHITE, cv2.MARKER_CROSS, 20, 1)
-    return view, results
-
-
-def format_result(result):
-    x, y, z = result["tvec"] * 100.0
-    return (f"ID {result['id']}: X={x:+7.1f} cm  Y={y:+7.1f} cm  Z={z:7.1f} cm  "
-            f"yaw={result['yaw_deg']:+6.1f} deg  reproj={result['reproj_error_px']:.2f} px")
+def describe(state):
+    """One line of text for the terminal."""
+    if not state.detected:
+        return "no marker" + (f" ({state.rejected_reason})" if state.rejected_reason else "") + \
+               (f" - predicting, lost {state.age_s * 1000:.0f} ms" if state.valid else "")
+    x, y, z = state.camera_xyz_m * 100
+    text = (f"CAM X={x:+6.1f} Y={y:+6.1f} Z={z:6.1f} cm  head={math.degrees(state.heading_cam_rad):+6.1f} deg"
+            f"  reproj={state.reproj_error_px:.2f}px")
+    if state.errors is not None and state.errors.valid:
+        e = state.errors
+        text += (f" | ERR fwd={e.e_forward_m * 100:+5.1f} left={e.e_left_m * 100:+5.1f} up={e.e_up_m * 100:+5.1f} cm"
+                 f" yaw={math.degrees(e.e_yaw_rad):+5.1f} deg")
+    return text
 
 
 # ============================================================
@@ -157,23 +69,26 @@ def format_result(result):
 # ============================================================
 
 if args.image:
+    try:
+        processor = MarkerProcessor(config)
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
     frame = cv2.imread(args.image)
     if frame is None:
         print(f"ERROR: cannot read image {args.image}")
         sys.exit(1)
-    if (frame.shape[1], frame.shape[0]) != CALIB_SIZE:
-        print(f"WARNING: image is {frame.shape[1]}x{frame.shape[0]}, calibration is {CALIB_SIZE[0]}x{CALIB_SIZE[1]}. "
-              "The pose will be WRONG unless sizes match.")
-    view, results = process_frame(frame)
-    if not results:
-        print("No target marker detected in the image.")
-    for result in results:
-        print(format_result(result))
+    calib = processor.calibration
+    if (frame.shape[1], frame.shape[0]) != (calib["image_width"], calib["image_height"]):
+        print(f"WARNING: image is {frame.shape[1]}x{frame.shape[0]}, calibration is "
+              f"{calib['image_width']}x{calib['image_height']} - the pose will be WRONG.")
+    state, view = processor.process(frame)
+    print(describe(state))
     out_path = repo_path(os.path.join("results", "pose_result.png"))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     cv2.imwrite(out_path, view)
     print(f"Annotated image saved to {out_path}")
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    if not os.environ.get("NO_DISPLAY"):
         cv2.imshow("pose (any key = close)", view)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -181,23 +96,22 @@ if args.image:
 
 
 # ============================================================
-# OPEN CAMERA
+# START TRACKER (live camera or video file)
 # ============================================================
 
-def open_checked_camera():
-    capture, actual = open_camera(camera_config)
-    if (actual["width"], actual["height"]) != CALIB_SIZE:
-        capture.release()
-        raise RuntimeError(f"camera delivers {actual['width']}x{actual['height']} but calibration is "
-                           f"{CALIB_SIZE[0]}x{CALIB_SIZE[1]}; the pose would be wrong.")
-    return capture
-
+if args.video:
+    config["camera"]["device"] = args.video
 
 try:
-    capture = open_checked_camera()
-except RuntimeError as exc:
+    tracker = MarkerTracker(config)
+    tracker.start()
+except (RuntimeError, FileNotFoundError) as exc:
     print(f"ERROR: {exc}")
     sys.exit(1)
+
+print(f"Marker: {config['aruco']['dictionary']} ID {config['aruco']['marker_id']}, "
+      f"{config['aruco']['marker_length_mm']} mm.  Target set: {tracker.processor.target is not None}")
+print("Running.  q = quit,  s = snapshot,  r = record video\n")
 
 
 # ============================================================
@@ -210,116 +124,86 @@ if args.log:
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
     log_file = open(LOG_FILE, "w", newline="")
     writer = csv.writer(log_file)
-    writer.writerow(["time_s", "marker_id", "x_m", "y_m", "z_m", "distance_m",
-                     "rvec_x", "rvec_y", "rvec_z", "yaw_deg", "reproj_error_px", "side_px"])
-    print(f"Logging poses to {LOG_FILE}")
+    writer.writerow(["time_s", "detected", "valid", "age_s", "cam_x_m", "cam_y_m", "cam_z_m", "heading_cam_deg",
+                     "reproj_px", "world_x_m", "world_y_m", "world_z_m", "yaw_world_deg",
+                     "filt_x_m", "filt_y_m", "filt_z_m", "vel_x_mps", "vel_y_mps", "vel_z_mps",
+                     "e_forward_m", "e_left_m", "e_up_m", "e_yaw_deg", "x_n", "y_n", "a_n", "alpha_deg"])
+    print(f"Logging to {LOG_FILE}")
+
+
+def nan_list(values, n):
+    return list(values) if values is not None else [float("nan")] * n
 
 
 # ============================================================
-# MAIN LOOP
+# MAIN LOOP (display + print + log; the tracking runs in its own thread)
 # ============================================================
-
-print("\nRunning. q = quit, s = snapshot, p = pause\n")
 
 start_time = time.perf_counter()
-last_print_time = 0.0
-last_seen_time = None
-failed_reads = 0
-paused = False
-frame = None
-fps_display = 0.0
-frame_count = 0
-fps_timer = time.perf_counter()
+last_print = 0.0
+last_logged_index = -1
+last_recorded_index = -1
+video_writer = None
 
 try:
-    while True:
-
-        # ----------------------------------------------------
-        # READ FRAME (with reconnect on failure)
-        # ----------------------------------------------------
-        if not paused:
-            ok, new_frame = capture.read()
-            if not ok or new_frame is None:
-                failed_reads += 1
-                if failed_reads >= MAX_FAILED_READS:
-                    print("Camera stopped delivering frames - trying to reopen ...")
-                    capture.release()
-                    time.sleep(1.0)
-                    try:
-                        capture = open_checked_camera()
-                        failed_reads = 0
-                        print("Camera reopened.")
-                    except RuntimeError as exc:
-                        print(f"ERROR: could not reopen camera: {exc}")
-                        break
-                continue
-            failed_reads = 0
-            frame = new_frame
-
-            frame_count += 1
-            now = time.perf_counter()
-            if now - fps_timer >= 1.0:
-                fps_display = frame_count / (now - fps_timer)
-                frame_count = 0
-                fps_timer = now
-
-        if frame is None:
-            continue
-
-        # ----------------------------------------------------
-        # DETECT + POSE
-        # ----------------------------------------------------
-        view, results = process_frame(frame)
+    while tracker.is_running():
+        state = tracker.get_state()
+        view = tracker.get_frame()
         elapsed = time.perf_counter() - start_time
 
-        if any(r["id"] == TARGET_ID for r in results):
-            last_seen_time = elapsed
+        if view is not None:
+            if video_writer is not None:
+                raw = tracker.get_raw_frame()
+                if raw is not None and state.frame_index != last_recorded_index:
+                    video_writer.write(raw)          # raw image -> can be replayed with --video
+                    last_recorded_index = state.frame_index
+            cv2.imshow("ArUco pose  (q quit | s snapshot | r record)", view)
 
-        status = "PAUSED" if paused else f"{fps_display:.1f} fps"
-        if last_seen_time is not None and not any(r["id"] == TARGET_ID for r in results):
-            status += f"   marker lost for {elapsed - last_seen_time:.1f} s"
-        draw_text(view, status, (10, view.shape[0] - 15), WHITE, 0.6)
-        cv2.imshow("ArUco pose  (q = quit, s = snapshot, p = pause)", view)
+        if elapsed - last_print >= PRINT_INTERVAL:
+            print(f"[{elapsed:7.2f} s] {describe(state)}")
+            last_print = elapsed
 
-        # ----------------------------------------------------
-        # PRINT + LOG
-        # ----------------------------------------------------
-        if not paused and elapsed - last_print_time >= PRINT_INTERVAL:
-            if results:
-                for result in results:
-                    print(f"[{elapsed:7.2f} s] {format_result(result)}")
-            else:
-                print(f"[{elapsed:7.2f} s] no target marker")
-            last_print_time = elapsed
+        if writer is not None and state.frame_index != last_logged_index:
+            last_logged_index = state.frame_index
+            e = state.errors
+            f = state.features
+            writer.writerow([round(state.t - start_time, 4), int(state.detected), int(state.valid), state.age_s,
+                             *nan_list(state.camera_xyz_m, 3),
+                             math.degrees(state.heading_cam_rad) if state.heading_cam_rad is not None else float("nan"),
+                             state.reproj_error_px, *nan_list(state.world_xyz_m, 3),
+                             math.degrees(state.yaw_world_rad) if state.yaw_world_rad is not None else float("nan"),
+                             *nan_list(state.filtered_xyz_m, 3), *nan_list(state.filtered_vel_mps, 3),
+                             *(nan_list(None, 3) if e is None else [e.e_forward_m, e.e_left_m, e.e_up_m]),
+                             math.degrees(e.e_yaw_rad) if e is not None else float("nan"),
+                             *(nan_list(None, 4) if f is None else [f["x_n"], f["y_n"], f["a_n"], math.degrees(f["alpha_rad"])])])
 
-        if writer is not None and not paused:
-            for result in results:
-                t = result["tvec"]
-                r = result["rvec"]
-                writer.writerow([round(elapsed, 4), result["id"], t[0], t[1], t[2], float(np.linalg.norm(t)),
-                                 r[0], r[1], r[2], result["yaw_deg"], result["reproj_error_px"], result["side_px"]])
-
-        # ----------------------------------------------------
-        # KEYS
-        # ----------------------------------------------------
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(10) & 0xFF
         if key in (ord("q"), 27):
             break
-        if key == ord("p"):
-            paused = not paused
-        if key == ord("s") and frame is not None:
+        if key == ord("s") and view is not None:
             path = repo_path(os.path.join("results", f"snapshot_{int(time.time())}.png"))
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            cv2.imwrite(path, frame)
+            cv2.imwrite(path, view)
             print(f"Saved {path}")
+        if key == ord("r") and view is not None:
+            if video_writer is None:
+                path = repo_path(os.path.join("results", f"recording_{int(time.time())}.avi"))
+                video_writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"MJPG"), 30, (view.shape[1], view.shape[0]))
+                print(f"Recording to {path} (press r again to stop)")
+            else:
+                video_writer.release()
+                video_writer = None
+                print("Recording stopped.")
 
 except KeyboardInterrupt:
     print("Interrupted.")
 
 finally:
-    capture.release()
+    tracker.stop()
+    if video_writer is not None:
+        video_writer.release()
     cv2.destroyAllWindows()
     if log_file is not None:
         log_file.close()
-        print(f"Pose log saved to {LOG_FILE}")
+        print(f"Log saved to {LOG_FILE}")
     print("Camera released.")
