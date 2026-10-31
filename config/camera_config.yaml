@@ -1,0 +1,123 @@
+# ============================================================
+# CAMERA + MARKER CONFIGURATION  (single source of truth)
+# ============================================================
+# Every program in this repository reads THIS file, so the
+# calibration and the detection always use identical settings.
+#
+# Values marked  MEASURE  depend on your physical setup.
+# Edit them after measuring - do not trust the defaults blindly.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# CAMERA
+# ------------------------------------------------------------
+camera:
+
+  # Which webcam to open. Any of these work on Ubuntu:
+  #   0                      -> /dev/video0
+  #   "/dev/video2"          -> explicit device node
+  #   "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_XXXXXXXX-video-index0"
+  #                          -> stable name that never changes between reboots (recommended)
+  # Find yours with:  python3 detection/camera_info.py --list
+  device: 0
+
+  # Resolution and frame rate. MUST stay identical for calibration and detection.
+  # 1280x720 @ 30 fps is the recommended compromise for the C920 (see docs/02).
+  width: 1280
+  height: 720
+  fps: 30
+
+  # Pixel format. The C920 only delivers 30 fps at 720p/1080p in MJPG.
+  # (Uncompressed YUYV is limited to ~10 fps at 1280x720 and ~5 fps at 1920x1080.)
+  fourcc: "MJPG"
+
+  # Keep only the newest frame in the driver queue (lower latency).
+  buffer_size: 1
+
+  # Optional V4L2 controls applied with `v4l2-ctl` every time a program opens the
+  # camera, so calibration and detection always run with the same settings.
+  # - Controls your camera does not report are skipped with a warning.
+  # - Order matters: set the "auto" switch BEFORE the manual value.
+  # - Leave empty ({}) until you have read docs/02_c920_configuration.md and
+  #   measured your own values (focus value, exposure value).
+  # Example for a C920 on a recent kernel (VERIFY names with: v4l2-ctl -d <dev> --list-ctrls):
+  #   v4l2_controls:
+  #     focus_automatic_continuous: 0     # autofocus OFF
+  #     focus_absolute: 30                # MEASURE (see docs/02)
+  #     zoom_absolute: 100                # 100 = no digital zoom (full field of view)
+  #     auto_exposure: 1                  # 1 = manual exposure
+  #     exposure_time_absolute: 100       # MEASURE, units of 100 us -> 100 = 10 ms (flicker-free at 50 Hz mains)
+  #     exposure_dynamic_framerate: 0     # do not let the camera drop the frame rate
+  #     gain: 64                          # MEASURE
+  #     white_balance_automatic: 0
+  #     white_balance_temperature: 4500
+  #     power_line_frequency: 1           # 1 = 50 Hz mains (India), 2 = 60 Hz
+  v4l2_controls: {}
+
+
+# ------------------------------------------------------------
+# CHECKERBOARD (camera calibration target)
+# ------------------------------------------------------------
+checkerboard:
+
+  # Number of INNER corners (where four squares meet), NOT the number of squares.
+  # A board with 7 x 10 squares has 6 x 9 inner corners.
+  # Defaults match tools/generate_print_sheets.py and the sheet already printed.
+  inner_corners_cols: 6
+  inner_corners_rows: 9
+
+  # MEASURE: side of ONE square in millimetres, measured on YOUR print
+  # (measure 6 squares with a steel ruler and divide by 6).
+  square_size_mm: 25.0
+
+
+# ------------------------------------------------------------
+# ARUCO MARKER
+# ------------------------------------------------------------
+aruco:
+
+  # Any OpenCV predefined dictionary name, e.g. DICT_4X4_50, DICT_5X5_100, DICT_6X6_250.
+  dictionary: "DICT_4X4_50"
+
+  # The marker whose pose is estimated (others are still drawn).
+  marker_id: 0
+
+  # MEASURE: side length of the BLACK square of the printed marker, in millimetres
+  # (outer edge of the black border; the white margin is NOT included).
+  # The 3-D position scales directly with this number: 2 % error here = 2 % error in X, Y, Z.
+  marker_length_mm: 50.0
+
+
+# ------------------------------------------------------------
+# CALIBRATION
+# ------------------------------------------------------------
+calibration:
+
+  images_dir: "calibration/calibration_images"
+  output_file: "results/camera_calibration.npz"
+
+  # Refuse to calibrate with fewer usable images than this.
+  min_images: 15
+
+  # Images whose own reprojection error is above this (pixels) are dropped
+  # and the calibration is repeated once without them.
+  max_image_error_px: 1.0
+
+
+# ------------------------------------------------------------
+# DETECTION / POSE ESTIMATION
+# ------------------------------------------------------------
+detection:
+
+  # How often X, Y, Z are printed to the terminal (the window updates every frame).
+  print_rate_hz: 5
+
+  # Length of the drawn coordinate axes, as a fraction of the marker size.
+  axis_length_ratio: 0.6
+
+  # After this many consecutive failed frame reads, try to reopen the camera.
+  max_failed_reads: 30
+
+  # Optional CSV log of every pose (enable with --log on the command line).
+  log_file: "results/pose_log.csv"

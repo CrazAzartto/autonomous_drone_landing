@@ -1,0 +1,9 @@
+# Written for Python 3.10 (Ubuntu 22.04) and 3.12 (Ubuntu 24.04).
+# opencv-contrib-python provides cv2.aruco.ArucoDetector (new API since 4.7).
+# 4.10 is the first release built for NumPy 2 - older OpenCV + NumPy 2 crashes on import.
+# Do NOT install opencv-python at the same time (it conflicts with the contrib build).
+opencv-contrib-python>=4.10,<5
+numpy
+PyYAML>=5.4
+# Only used by tools/generate_print_sheets.py to write exact-size PDFs:
+Pillow>=9.0

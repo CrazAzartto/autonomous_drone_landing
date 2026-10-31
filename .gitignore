@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated data - personal to each camera, never commit
+calibration/calibration_images/*
+!calibration/calibration_images/.gitkeep
+results/*
+!results/.gitkeep
+*.npz
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
