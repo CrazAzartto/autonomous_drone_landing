@@ -49,12 +49,12 @@ camera:
   # opens the C920's own settings window; adjust there, and the program prints the values
   # to copy here. Units are those of the Windows (DirectShow) driver - see docs/02.
   controls:
-    autofocus: null      # 0 = OFF (recommended after you found a good focus), 1 = ON
-    focus: null          # MEASURE: manual focus value (C920: about 0..250, step 5)
-    auto_exposure: null  # DirectShow: value depends on driver - use the settings window (docs/02)
-    exposure: null       # DirectShow units: log2(seconds). -6 = 15.6 ms, -7 = 7.8 ms, -8 = 3.9 ms
-    gain: null           # 0..255 on the C920; raise only if the image is too dark at short exposure
-    zoom: null           # C920 digital zoom: 100 = NO zoom (full field of view). Keep 100.
+    autofocus: 2      # 0 = OFF (recommended after you found a good focus), 1 = ON
+    focus: 30          # MEASURE: manual focus value (C920: about 0..250, step 5)
+    auto_exposure: -1  # DirectShow: value depends on driver - use the settings window (docs/02)
+    exposure: -5       # DirectShow units: log2(seconds). -6 = 15.6 ms, -7 = 7.8 ms, -8 = 3.9 ms
+    gain: 100           # 0..255 on the C920; raise only if the image is too dark at short exposure
+    zoom: 100          # C920 digital zoom: 100 = NO zoom (full field of view). Keep 100.
 
 
 # ------------------------------------------------------------
@@ -87,7 +87,7 @@ aruco:
   # MEASURE: side length of the BLACK square of the printed marker, in millimetres
   # (outer edge of the black border; the white margin is NOT included).
   # The 3-D position scales directly with this number: 2 % error here = 2 % error in X, Y, Z.
-  marker_length_mm: 50.0
+  marker_length_mm: 40.0
 
 
 # ------------------------------------------------------------

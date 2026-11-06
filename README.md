@@ -1,112 +1,81 @@
-# Autonomous Drone Landing: vision-based position hold and landing of a Pluto drone (Windows)
+# Autonomous Drone Landing: image-moment IBVS on a Pluto nano drone
 
-BTP project: a **Logitech C920 on the floor looking up** sees an **ArUco marker under a Pluto nano drone**.
-The code turns every camera frame into the drone's position, velocity and heading relative to a target point.
-From these it computes the **errors a PID controller needs**. The approach follows IIT Bombay's Vicon-based
-Pluto controller (`RC = 1500 + PID(error)`), with the camera + marker replacing the Vicon system.
+BTP project. A **Logitech C920 on the floor, looking up**, watches an **ArUco marker under a Pluto drone**. The drone is
+brought to a desired image configuration and landed with the **image-based visual servoing (IBVS) of Paper 1** (Hegazy,
+Boby, Klimchik: image moments, interaction matrix, adaptive gain, two-stage algorithm). The Pluto-specific command layer
+follows the **IIT Bombay** controller (Paper 3: RC = 1500 + PID on the error) and the Pluto firmware.
 
 | Part | Status |
 |---|---|
-| Camera setup on Windows (DirectShow, MJPG 1280×720@30, focus/exposure locked and read back) | **done** |
-| Camera calibration (capture with coverage/blur checks, calibration, report) | **done** |
-| ArUco detection + 3-D pose (IPPE_SQUARE, bad poses rejected) | **done** |
-| Target / world frame, heading, drone-frame errors, Kalman velocity, image-moment features | **done** |
-| Control loop: modes, keys, safety (marker lost → neutral → land), logging, plots, Pluto connection | **done** |
-| **PID law** (`control/pid_controller.py`) and **RC mapping** (`compute_rc()` in `control/run_controller.py`) | **your remaining work**, marked `### TODO ###` |
+| Stage 1: camera on Windows, calibration, ArUco pose (`calibration/`, `detection/`, `common/`) | done, used on your C920 (RMS 0.43 px) |
+| Paper 1 features, interaction matrix, control law, adaptive gain, stages, learning step (`ibvs/`) | done; Eq.(10) **verified** against finite differences |
+| Eye-to-hand adaptation (camera on the floor) and drone body frame (`ibvs/frames.py`) | done; derivation in docs/06 §4 |
+| Pluto interface: velocity → RC, firmware maps, MSP telemetry, dry-run / live / sim adapters (`pluto_interface/`) | done; **signs and gains must be verified on your drone** (docs/08) |
+| Safety supervisor, independent watchdog, live-control gate, operator take-over (`safety/`, `control/ibvs_run.py`) | done; tested in software only |
+| Logging (145 columns/cycle), publication plots, RC identification, noise floor (`runlog/`, `analysis/`) | done |
+| SYNTHETIC simulator + 42 unit/integration tests (`sim/`, `tests/`) | 42 passed (Linux, OpenCV 4.10; Windows, OpenCV 4.14) |
+| **Hardware validation** (bench, identification flights, IBVS flights) | **not done yet**: follow docs/08 in order |
 
-**Start here → [docs/04_windows_step_by_step.md](docs/04_windows_step_by_step.md)** (complete click-by-click guide).
+> Nothing here has flown. No result in this repository is a flight result. Simulator outputs are labelled SYNTHETIC
+> everywhere.
+
+## Documents
+| | |
+|---|---|
+| [docs/04_windows_step_by_step.md](docs/04_windows_step_by_step.md) | Stage 1: printing, calibration, pose (click by click) |
+| [docs/06_ibvs_architecture.md](docs/06_ibvs_architecture.md) | **the method**: data flow, Paper 1 ↔ code, frames, eye-to-hand proof, worked example, modifications |
+| [docs/07_pluto_command_interface.md](docs/07_pluto_command_interface.md) | what the Pluto accepts (firmware citations), Paper 3, velocity → RC, gain derivation, identification |
+| [docs/08_safety_and_testing.md](docs/08_safety_and_testing.md) | **hazard analysis and the staged test plan (read before any live run)** |
+| [docs/09_running_ibvs.md](docs/09_running_ibvs.md) | commands, modes, keys, plots, git |
+| docs/01-03, 05 | calibration theory, C920 settings, pose theory, the earlier position-PID template (baseline) |
 
 ## Quick start (PowerShell)
-
 ```powershell
 cd "D:\Study Materials\BTP\codebase\autonomous_drone_landing"
-..\.venv\Scripts\Activate.ps1                         # (.venv) appears
-python -m pip install -r requirements.txt             # first time only
-
-python detection\camera_info.py --list                # find the C920 index -> config camera.device
-python detection\camera_info.py --settings            # lock focus/exposure, press p, copy into config
-python calibration\capture_calibration_images.py --clear
-python calibration\calibrate_camera.py
-python detection\aruco_pose_estimation.py             # tape-measure check of Z
-python tools\set_target.py                            # define target point + "forward", check signs
-python detection\aruco_pose_estimation.py --log       # live world position, errors, velocities
-python control\run_controller.py                      # controller DRY RUN (sends nothing)
+..\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pytest -q tests                                   # 42 passed
+python control\ibvs_run.py --mode sim                       # SYNTHETIC closed loop with the operator window
+python control\ibvs_run.py --mode camera                    # your C920: features + PnP, nothing sent
+python control\ibvs_run.py --mode compute                   # full controller, nothing sent (press I, move the drone by hand)
+python analysis\plot_ibvs_run.py results\runs\<run folder>  # figures + convergence summary
 ```
+`--mode live` (and `--mode live --bench` with propellers removed) works only after you set
+`safety.live_control_enabled: true` and type a confirmation word. Do this after docs/08 stages A-D.
 
 ## Repository layout
-
 ```
-autonomous_drone_landing/
-├── config/camera_config.yaml        ONE config for every program (camera, board, marker, filter, target, loop)
-├── common/                          shared low-level code
-│   ├── config.py                    load + validate the YAML
-│   ├── camera.py                    open the camera on Windows (DirectShow, MJPG, controls with read-back)
-│   ├── aruco_utils.py               detector, solvePnP pose, reprojection error
-│   ├── calibration_io.py            save/load results/camera_calibration.npz
-│   └── overlay.py                   readable on-screen text
-├── vision/                          state estimation (the "sensor" of the controller)
-│   ├── marker_tracker.py            MarkerProcessor (one frame) + MarkerTracker (camera thread)
-│   ├── target.py                    target file, world frame, ControlErrors (drone-frame errors)
-│   ├── kalman.py                    constant-velocity Kalman filter (position + velocity)
-│   └── features.py                  image-moment features x_n, y_n, a_n, alpha (Papers 1/2)
-├── calibration/
-│   ├── capture_calibration_images.py
-│   ├── calibrate_camera.py
-│   └── calibration_images/          your photos (not uploaded)
-├── detection/
-│   ├── camera_info.py               list cameras, check fps, settings window, print controls
-│   └── aruco_pose_estimation.py     live pose / world / errors, CSV log, raw-video recording, replay
-├── tools/
-│   ├── generate_print_sheets.py     exact-size PDFs of the marker and the checkerboard
-│   └── set_target.py                record the target point and the forward direction
-├── control/
-│   ├── run_controller.py            control loop template: YOUR RC mapping goes in compute_rc()
-│   ├── pid_controller.py            PID class: YOUR PID law goes in update()
-│   └── plotting.py                  plots of results/control_log.csv
-├── docs/
-│   ├── 01_camera_calibration_guide.md   theory + procedure of calibration
-│   ├── 02_c920_configuration.md         the C920 on Windows (DirectShow, MJPG, settings)
-│   ├── 03_aruco_and_pose_estimation.md  pose, frames, world frame, Kalman filter, features
-│   ├── 04_windows_step_by_step.md       THE complete procedure
-│   └── 05_adding_pid_and_rc.md          how to finish the controller (signs, gains, tuning, safety)
-└── results/                         calibration, target, logs, recordings (not uploaded)
+config/camera_config.yaml      camera, calibration, marker (Stage 1)
+config/ibvs_config.yaml        IBVS stages, gains, Pluto interface, safety, logging, simulator (every value tagged with its basis)
+common/                        camera opening (DirectShow), ArUco + solvePnP, calibration I/O          (Stage 1)
+calibration/  detection/       Stage-1 programs (capture, calibrate, camera info, live pose)
+vision/                        Kalman filter, world-frame tools, marker tracker                           (Stage 1, reused)
+ibvs/  moments.py features.py interaction.py controller.py frames.py sources.py runtime.py
+pluto_interface/  command_mapper.py msp_parser.py adapters.py
+safety/  supervisor.py watchdog.py
+runlog/  run_logger.py columns.py
+sim/  pluto_sim.py             SYNTHETIC plant + camera
+control/ibvs_run.py            PROGRAM 6: the IBVS program (all modes)
+control/run_controller.py      earlier position-PID template (Paper 3-style baseline, still works)
+analysis/  plot_ibvs_run.py identify_rc_response.py suggest_gains.py feature_noise.py
+tools/                         print sheets, set_target (for the PID baseline)
+tests/                         pytest suite
+results/                       calibration, runs, plots (git-ignored)
 ```
 
-## How the pieces fit
-
+## How one control cycle works (details: docs/06)
 ```
-camera thread:  frame -> ArUco -> solvePnP -> reject if reprojection > 2 px
-                      -> camera frame -> world frame (target.json) -> Kalman filter
-                      -> ControlErrors(e_forward, e_left, e_up, e_yaw, velocities)
-control loop (30 Hz):  errors -> PID (yours) -> RC = 1500 + sign*PID (yours) -> Pluto (Wi-Fi, MSP)
-```
-
-Using it in your own script:
-
-```python
-from common.config import load_config
-from vision.marker_tracker import MarkerTracker
-
-tracker = MarkerTracker(load_config(None)); tracker.start()
-state = tracker.get_state()                  # newest result, never waits for the camera
-if state.errors is not None and state.errors.valid:
-    print(state.errors.e_forward_m, state.errors.v_forward_mps)
-tracker.stop()
+C920 frame -> ArUco corners -> moments -> s=[x_n,y_n,a_n,alpha] -> e=s-s* -> L_s (Eq.10), L_hat+ = (L(s)+ + L(s*)+)/2
+ -> v_c = -lambda L_hat+ e (Eq.1, adaptive lambda) -> u_m = L_s v_c (eye-to-hand) -> body (fwd,left,up,yaw) via psi=alpha-90deg
+ -> limits -> velocity PI with camera-estimated velocity (pitch/roll), firmware velocity map (throttle), rate map (yaw)
+ -> safety supervisor -> RC -> plutocontrol (MSP over Wi-Fi) ;  stage 1 -> stage 2 -> firmware LAND   (Algorithm 1)
 ```
 
-## What has been verified and what not
-
-| Item | Status |
-|---|---|
-| All programs with opencv-contrib-python **4.10.0** (Linux test machine) | **Tested on a synthetic camera:** calibration fx 910.6 vs 912 true, RMS 0.10 px; pose X/Y/Z 12.1/−5.0/90.5 cm vs 12/−5/90 cm |
-| World frame and errors | **Tested (synthetic):** 10 cm behind → e_forward +10.0 cm; 10 cm right → e_left +10.2 cm; 20° left → e_yaw −20.4°; rotated 90° + displaced → correct body-frame errors |
-| Kalman velocity | **Tested (synthetic):** 0.20 m/s → −0.203 m/s (σ 0.007 m/s); marker lost 0.6 s → state invalid |
-| Controller loop | **Tested (dry run on a synthetic video, simulated keys):** arm/take-off/hold/landing ramp/emergency stop; log written |
-| Your laptop: Python 3.12.10 venv, OpenCV 4.14.0, C920 listed as index 1 ("HD Pro Webcam C920") | **Checked** |
-| Same synthetic image and video **on your laptop** (pose, target, Kalman velocity, MJPG video decoding), `plutocontrol` import from `pluto_course` | **Tested**, same results as above. The camera itself was not opened |
-| Live C920 run, calibration quality, real pose accuracy, fps on your laptop | **Not yet tested.** That is your first run (docs/04) |
-| Pluto RC signs (forward = pitch 1600, left = roll 1400, left_yaw = 1300) | taken from your `plutocontrol` library. **Verify on the drone with the propellers off** (docs/05) |
-
-## Rules for the repository
-- Generated files (`results/`, calibration images, `.npz`, logs, recordings) are git-ignored. Never commit them.
-- No passwords or tokens in the code or the config.
+## Verified vs assumed (summary)
+- **Verified in code/tests:** Paper 1 feature, interaction-matrix and control-law equations; the eye-to-hand conversion;
+  the sign chain (drone behind / right / low / turned right ⇒ pitch > 1500 / roll < 1500 / throttle > 1500 / yaw < 1500,
+  consistent with your plutocontrol stick functions); safety and watchdog logic; MSP telemetry parsing; identification on
+  synthetic data.
+- **From firmware source (your firmware version not checked):** roll/pitch = tilt, throttle = vertical velocity
+  ((RC−1500)/4 cm/s, ±40 dead band), yaw = rate, RX-loss ⇒ LAND.
+- **Assumptions to measure (docs/08):** tilt gain, delay, yaw scale, headfree off, camera level, noise floor, battery threshold.

@@ -1,4 +1,4 @@
-# Windows 10/11, Python 3.12 (tested with 3.12.10 in codebase\.venv).
+# Windows 10/11, Python 3.12 (tested: 3.12.10 in codebase\.venv).
 # Install:   python -m pip install -r requirements.txt
 #
 # opencv-contrib-python provides cv2.aruco.ArucoDetector (new ArUco API).
@@ -9,9 +9,14 @@ numpy
 PyYAML>=5.4
 # tools/generate_print_sheets.py writes exact-size PDFs with Pillow:
 Pillow>=9.0
-# control/plotting.py:
+# plots (control/plotting.py, analysis/*.py):
 matplotlib
+# operator window and keyboard of control/ibvs_run.py (same library as your manual-flight scripts):
+pygame
+# unit tests (python -m pytest -q tests):
+pytest
 # Lists the cameras by NAME on Windows (detection/camera_info.py --list). Optional.
 pygrabber; sys_platform == "win32"
-# The Pluto drone library used by control/run_controller.py --fly is the same one your
-# pluto_course scripts use (plutocontrol); install it as you did there.
+# The Pluto library (plutocontrol) is NOT installed from here: control/ibvs_run.py --mode live uses your copy in
+# ../pluto_course/plutocontrol (config/ibvs_config.yaml -> pluto.library_dir). Do not pip-install it: the GitHub
+# version uses different stick values than yours.

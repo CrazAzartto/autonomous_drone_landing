@@ -51,9 +51,19 @@ def default_backend():
 
 
 def backend_id(name):
+    """
+    "auto" picks DirectShow on Windows and V4L2 on Linux. A Windows-only backend requested on Linux
+    (or V4L2 on Windows) falls back to the platform default, so the same config works on both systems.
+    """
     name = (name or "any").lower()
+    if name == "auto":
+        name = default_backend()
     if name not in BACKENDS:
-        raise ValueError(f"Unknown camera backend '{name}'. Use one of: {', '.join(BACKENDS)}")
+        raise ValueError(f"Unknown camera backend '{name}'. Use one of: auto, {', '.join(BACKENDS)}")
+    windows = sys.platform.startswith("win")
+    if (name in ("dshow", "msmf") and not windows) or (name == "v4l2" and windows):
+        print(f"NOTE: camera backend '{name}' is not available on this system - using '{default_backend()}'.")
+        name = default_backend()
     return BACKENDS[name]
 
 

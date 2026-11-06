@@ -1,5 +1,9 @@
 # 05 · Adding the PID controller and the RC commands (the remaining BTP work)
 
+> **Update:** the project now implements Paper 1's IBVS controller (docs/06-09, `control/ibvs_run.py`). This document
+> describes the earlier **position-PID template** (`control/run_controller.py`), which is kept as a Paper-3-style
+> **baseline** for comparison. Its sign table and dead-band notes also apply to the IBVS program.
+
 > **Tags:** **[Verified]** = checked in code, a source or tests, **[Recommendation]** = engineering advice,
 > **[Assumption]** = must be checked on your drone. *Illustrative* numbers are examples, not tuned values.
 

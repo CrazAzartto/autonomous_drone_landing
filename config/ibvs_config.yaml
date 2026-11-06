@@ -1,0 +1,220 @@
+# ============================================================
+# IBVS CONTROLLER + PLUTO INTERFACE + SAFETY CONFIGURATION
+# ============================================================
+# Used by control/ibvs_run.py. The camera, calibration and marker settings stay in camera_config.yaml
+# (unchanged Stage-1 file).
+#
+# Each value is tagged with its basis:
+#   [P1]  value taken from Paper 1 (Hegazy, Boby, Klimchik) - page given
+#   [P3]  taken from / derived from Paper 3 (Singh et al., IIT Bombay, arXiv:2412.08757)
+#   [FW]  Pluto firmware source (DronaAviation MagisV2) - file given in docs/07
+#   [LIB] your plutocontrol library / your manual-flight script
+#   [DER] derived in docs/06-07 from the items above (the derivation is shown there)
+#   [ASM] assumption / conservative starting value - MUST be re-measured (docs/08 test plan)
+# ============================================================
+
+
+# ------------------------------------------------------------
+# IBVS (Paper 1)
+# ------------------------------------------------------------
+ibvs:
+
+  # Orientation feature. [P1] p.4 text: "first corner and third corner"; printed formula:
+  # atan2(y2 - y1, x2 - x1). "edge_0_1" = formula, "diagonal_0_2" = text. Only a constant offset differs.
+  alpha_definition: "edge_0_1"
+
+  # L_hat^+ = 1/2 (L(s)^+ + L(s*)^+)  [P1] p.5.   Other options for comparison: "current", "desired".
+  interaction_estimate: "mean_pinv"
+
+  # Multiplies lambda_min and lambda_max of every stage. 1.0 = exactly [P1].
+  # [DER] 0.45: the inner velocity loop below has a crossover of ~1.36 rad/s; the outer IBVS loop must be
+  # ~3x slower, so lambda_max_eff = 0.45 1/s (docs/07 §5). [P1]'s lambda = 0.5..1.0 assumed a fast PX4
+  # velocity controller. Re-tune after measuring the delay (docs/08 test E2).
+  lambda_scale: 0.45
+
+  # [P1] Algorithm 1 (p.7): stage 1 coarse with marker 1, stage 2 fine with marker 2, then "turn off motors".
+  # In [P1] h = height of the drone camera above markers on the ground (0.6 m, 0.25 m).
+  # HERE z_star = height of the marker (under the drone) ABOVE THE CAMERA LENS.
+  stages:
+    - name: "coarse"
+      marker_id: 0                     # [P1] uses a second, smaller marker for stage 2; one marker is enough
+      marker_length_mm: null           # null = camera_config.yaml aruco.marker_length_mm
+      desired_source: "model"          # "model": a* = 2 L^2 / z*^2  |  "taught": file below (key P in the program)
+      taught_file: "results/ibvs_desired_coarse.json"
+      z_star_m: 0.80                   # [ASM] 80 cm above the lens: marker ~48 px wide, view ~1.1 m wide
+      x_g_star: 0.0                    # desired image position (normalised): 0, 0 = on the optical axis
+      y_g_star: 0.0
+      alpha_mode: "hold_at_engage"     # "desired" (alpha_star_deg below) | "hold_at_engage" (yaw not controlled)
+      alpha_star_deg: 0.0
+      error_threshold: 0.10            # [P1] p.5: 0.1 for the first marker
+      lambda_max: 1.0                  # [P1] p.6
+      lambda_min: 0.5                  # [P1] p.6
+      dwell_s: 0.5                     # [ASM] must stay below the threshold this long (0 = [P1])
+      timeout_s: 40.0                  # [ASM] not converged -> HOLD and tell the operator
+    - name: "fine"
+      marker_id: 0
+      marker_length_mm: null
+      desired_source: "model"
+      taught_file: "results/ibvs_desired_fine.json"
+      z_star_m: 0.55                   # [ASM] 55 cm above the lens: marker ~70 px; the C920 sees only
+                                       # +-0.37*Z vertically (+-20 cm here), so lower is risky
+      x_g_star: 0.0
+      y_g_star: 0.0
+      alpha_mode: "hold_at_engage"
+      alpha_star_deg: 0.0
+      error_threshold: 0.015           # [P1] p.5 (simulation value; see docs/06 §7 - likely below the
+                                       # hardware noise floor: measure it with analysis/feature_noise.py)
+      lambda_max: 1.0
+      lambda_min: 0.5
+      dwell_s: 0.5
+      timeout_s: 40.0
+
+  # After the last stage: [P1] "turn off motors" = "disarm". Default "land" = firmware LAND command
+  # (controlled descent, [FW] command/command.cpp land()), because cutting the motors drops the drone.
+  final_action: "land"                 # "land" | "disarm" | "hold"
+  auto_final_action: true              # false = HOLD and wait for the operator (key L)
+  # Stage not converged within timeout_s: "continue" (keep servoing, report; operator presses L) |
+  # "hold" (neutral sticks - the Pluto then DRIFTS, docs/07 §6) | "land" | "next_stage"
+  on_timeout: "continue"
+
+
+# ------------------------------------------------------------
+# VELOCITY ESTIMATE from the features (for the inner velocity loop and the logs)
+# ------------------------------------------------------------
+velocity_estimation:
+  # Constant-velocity Kalman filter (vision/kalman.py, reused) on [x_n, y_n, a_n] = marker position.
+  process_accel_std: 2.0               # [ASM] m/s^2, same as camera_config tracking
+  measurement_std_xy: 0.003            # [ASM] m - replace by analysis/feature_noise.py result
+  measurement_std_z: 0.008             # [ASM] m
+  yaw_rate_smoothing: 0.3              # low-pass weight of the newest alpha-rate sample
+
+
+# ------------------------------------------------------------
+# LIMITS on the IBVS output, BEFORE the Pluto mapping (drone body frame)
+# ------------------------------------------------------------
+body_velocity_limits:
+  max_horizontal_mps: 0.20             # [ASM] room scale: 0.2 m/s x 0.34 s delay = 7 cm travelled blind
+  max_up_mps: 0.15                     # [ASM]
+  max_down_mps: 0.15                   # [ASM]
+  max_yaw_rate_radps: 0.35             # [ASM] 20 deg/s
+
+
+# ------------------------------------------------------------
+# PLUTO COMMAND INTERFACE (velocity -> RC), docs/07
+# ------------------------------------------------------------
+command_interface:
+  neutral_us: 1500                     # [FW][LIB][P3]
+  horizontal:                          # forward -> pitch, left -> roll : velocity PI loop (docs/07 §3)
+    kv_us_per_mps: 120                 # [DER] tilt model 0.0113 m/s^2 per us -> crossover 1.36 rad/s;
+                                       # phase margin >= 40 deg for a total delay up to 0.5 s (docs/07 §5)
+    ki_us_per_m: 50                    # [DER] integral time 2.4 s (> 3/crossover); removes trim/draft offsets
+    integral_limit_us: 25              # [ASM] ~1.6 deg of tilt
+    max_correction_us: 40              # [ASM] ~2.6 deg tilt, ~0.45 m/s^2 (your manual keys use 100)
+    sign_pitch: 1                      # [LIB] forward() = pitch 1600       VERIFY (docs/08 B3, F1)
+    sign_roll: -1                      # [LIB] left() = roll 1400            VERIFY
+  vertical:                            # up -> throttle in altitude-hold mode
+    us_per_mps: 400                    # [FW] v_z = (RC - 1500)/4 cm/s  ->  400 us per m/s
+    deadband_us: 40                    # [FW] alt_hold_deadband = 40
+    deadband_mode: "compensate"        # "compensate" | "none"   (docs/07 §4)
+    min_effective_mps: 0.01            # below this: 1500 (firmware holds the barometric altitude)
+    max_up_us: 60                      # = 0.15 m/s
+    max_down_us: 60
+    sign_throttle: 1                   # [LIB] increase_height() = 1800     VERIFY
+  yaw:
+    enabled: false                     # yaw RC -> yaw RATE, but the scale is unknown: identify first (docs/08 E3)
+    us_per_radps: 0.0                  # set from analysis/identify_rc_response.py, then enable
+    max_correction_us: 50
+    sign_yaw: -1                       # [LIB] left_yaw() = yaw 1300         VERIFY
+  slew_us_per_s:                       # [ASM] max change of each channel per second
+    pitch: 300
+    roll: 300
+    throttle: 400
+    yaw: 300
+
+
+# ------------------------------------------------------------
+# MANUAL CONTROL (operator take-over keys) - the values of your manual-flight script [LIB]
+# ------------------------------------------------------------
+manual:
+  pitch_forward: 1600
+  pitch_backward: 1400
+  roll_left: 1400
+  roll_right: 1600
+  throttle_up: 1800
+  throttle_down: 1300
+  yaw_left: 1300
+  yaw_right: 1600
+
+
+# ------------------------------------------------------------
+# PLUTO CONNECTION (live / bench modes only)
+# ------------------------------------------------------------
+pluto:
+  library_dir: "../pluto_course/plutocontrol"   # your copy of plutocontrol (relative to this repository);
+                                                # null = use a pip-installed plutocontrol
+  ip: "192.168.4.1"
+  port: 23
+  read_telemetry: true
+  takeoff_neutral_after_s: 1.0         # [ASM] after key T, keep take_off()'s RC this long, then neutral sticks.
+                                       # take_off() leaves throttle at 1800 = climb at 75 cm/s in altitude hold
+                                       # ([LIB] box_arm, [FW] altitudehold.cpp). VERIFY in a manual flight.
+
+
+# ------------------------------------------------------------
+# SAFETY (docs/08)
+# ------------------------------------------------------------
+safety:
+  live_control_enabled: false          # MUST be set to true by hand before --mode live works at all
+  max_frame_age_s: 0.15                # [ASM] ~4 frames at 30 fps; older image -> HOLD
+  max_loop_dt_s: 0.25                  # [ASM] control cycle slower than this -> HOLD
+  marker_lost_land_s: 1.0              # [ASM] marker lost: HOLD at once, firmware LAND after this
+  max_height_m: 1.60                   # [ASM] marker becomes too small (40 mm marker: ~24 px at 1.6 m)
+  min_height_m: 0.20                   # [ASM] below: LAND (too close to the camera/pad)
+  fence_radius_m: 0.60                 # [ASM] horizontal distance from the camera axis -> HOLD
+  image_border_margin_px: 30           # warning only
+  max_condition: 50.0                  # cond(L_s) grows with |x_n|,|y_n|; 50 is far outside the fence
+  telemetry_max_age_s: 1.0
+  battery_land_v: 3.45                 # [ASM] 1S LiPo under load; your library calls 3.0 V "critical"
+  max_tilt_deg: 25.0                   # [FW] max commanded tilt is 20 deg; more = something is wrong
+  require_telemetry: false
+  watchdog_timeout_s: 0.5              # control loop silent this long -> neutral + LAND (other thread)
+  land_wait_s: 8.0                     # on quit: LAND, wait this long (or until landed), then disarm
+
+
+# ------------------------------------------------------------
+# LOGGING
+# ------------------------------------------------------------
+logging:
+  base_dir: "results/runs"
+  print_rate_hz: 2
+
+
+# ------------------------------------------------------------
+# SIMULATION (SYNTHETIC - software testing only; every value is an [ASM])
+# ------------------------------------------------------------
+simulation:
+  seed: 1
+  fps: 30
+  duration_s: 80
+  auto_engage_after_s: 1.0
+  use_calibration_file: true           # use YOUR camera_calibration.npz if present
+  initial_position_m: [0.20, -0.12, 1.10]   # camera frame: x right, y down-in-image, z up
+  initial_yaw_deg: 70.0
+  delay_s: 0.20                        # RC -> motion transport delay
+  tilt_deg_per_us: 0.066               # [DER from FW rc curve] RC 1600 ~ 6.6 deg
+  max_tilt_deg: 20.0
+  attitude_tau_s: 0.12
+  drag_per_s: 0.4
+  disturbance_accel_mps2: [0.05, -0.03]     # constant drift (trim error / draft)
+  gust_accel_std_mps2: 0.03                 # Ornstein-Uhlenbeck gusts / draft
+  gust_tau_s: 1.0
+  vertical_tau_s: 0.4
+  baro_drift_std_mps: 0.02                  # apparent vertical drift while the firmware holds baro altitude
+  baro_drift_tau_s: 10.0
+  yaw_radps_per_us: 0.004
+  land_speed_mps: 0.30
+  ground_z_m: 0.15                     # landing pad height above the lens
+  pixel_noise_px: 0.3
+  min_side_px: 15
+  dropout_probability: 0.01
+  marker_id: 0
